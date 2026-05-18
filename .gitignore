@@ -1,0 +1,12 @@
+data/
+html-examples/
+.claude/
+goals/
+logs/
+cron/
+docs/
+.env
+__pycache__/
+*.pyc
+.venv/
+poetry.lock
