@@ -128,6 +128,40 @@ async def list_followers(page, username: str, max_users: int | None = None) -> l
     ]
 
 
+async def get_profile_stats(page, username: str) -> dict:
+    """Visit /{username} and parse followers/following counts.
+
+    Reads from the `infoStats__statLink` title attrs (e.g. "1,872 followers",
+    "Following 928 people"). Returns {followers: int|None, following: int|None}.
+    """
+    import re
+    url = f"{SC_BASE}/{username}"
+    try:
+        await page.goto(url, wait_until="domcontentloaded")
+        await human_delay(1.2, 2.4)
+        followers = None
+        following = None
+        try:
+            t = await page.locator('a.infoStats__statLink[href$="/followers"]').first.get_attribute("title")
+            if t:
+                m = re.search(r'([\d,]+)', t)
+                if m:
+                    followers = int(m.group(1).replace(",", ""))
+        except Exception:
+            pass
+        try:
+            t = await page.locator('a.infoStats__statLink[href$="/following"]').first.get_attribute("title")
+            if t:
+                m = re.search(r'([\d,]+)', t)
+                if m:
+                    following = int(m.group(1).replace(",", ""))
+        except Exception:
+            pass
+        return {"followers": followers, "following": following}
+    except Exception:
+        return {"followers": None, "following": None}
+
+
 async def list_following(page, username: str, max_users: int | None = None) -> list[dict]:
     url = f"{SC_BASE}/{username}/following"
     await page.goto(url, wait_until="domcontentloaded")

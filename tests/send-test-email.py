@@ -21,8 +21,14 @@ SAMPLE = {
 
 
 def main():
+    SAMPLE.update({
+        "profile_followers": "1,872",
+        "profile_following": "928",
+        "delta_followers": "+14",
+        "delta_following": "-3",
+    })
     html = render_html(SAMPLE, name="Matthew")
-    result = send_email(html, subject="SoundCloudBot Report -- TEST EMAIL")
+    result = send_email(html, subject="SoundCloudBot Report -- TEST EMAIL (with profile stats)")
     print(result)
 
 

@@ -15,8 +15,38 @@ from urllib import error, request
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 ACTIONS_LOG = ROOT / "data" / "actions.log"
+LAST_STATS_FILE = ROOT / "data" / "last_stats.json"
 LOGS_DIR = ROOT / "logs"
 TEMPLATE_PATH = Path(__file__).resolve().parent / "email_template.html"
+
+
+def _load_last_stats() -> dict:
+    if not LAST_STATS_FILE.exists():
+        return {}
+    try:
+        return json.loads(LAST_STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_last_stats(followers: int | None, following: int | None):
+    try:
+        LAST_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_STATS_FILE.write_text(
+            json.dumps({"followers": followers, "following": following}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _fmt_delta(curr: int | None, prev) -> str:
+    if curr is None or prev is None:
+        return "—"
+    d = curr - int(prev)
+    if d > 0:
+        return f"+{d}"
+    return str(d)
 
 
 def load_env():
@@ -62,7 +92,13 @@ def _count_cron_runs() -> int:
     return sum(1 for _ in LOGS_DIR.glob("cron-wrapper-*.log"))
 
 
-def gather_stats(session_followed: int, session_unfollowed: int) -> dict:
+def gather_stats(
+    session_followed: int,
+    session_unfollowed: int,
+    profile_followers: int | None = None,
+    profile_following: int | None = None,
+) -> dict:
+    last = _load_last_stats()
     return {
         "greeting": _greeting(),
         "now": datetime.now().strftime("%H:%M:%S %m/%d/%Y"),
@@ -71,6 +107,10 @@ def gather_stats(session_followed: int, session_unfollowed: int) -> dict:
         "total_followed": _count_actions("follow", "followed"),
         "total_unfollowed": _count_actions("unfollow", "unfollowed"),
         "cron_runs": _count_cron_runs(),
+        "profile_followers": "—" if profile_followers is None else f"{profile_followers:,}",
+        "profile_following": "—" if profile_following is None else f"{profile_following:,}",
+        "delta_followers": _fmt_delta(profile_followers, last.get("followers")),
+        "delta_following": _fmt_delta(profile_following, last.get("following")),
     }
 
 
@@ -126,7 +166,21 @@ def send_email(html: str, subject: str | None = None) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def send_report(session_followed: int, session_unfollowed: int, name: str = "Matthew") -> dict:
-    stats = gather_stats(session_followed, session_unfollowed)
+def send_report(
+    session_followed: int,
+    session_unfollowed: int,
+    name: str = "Matthew",
+    profile_followers: int | None = None,
+    profile_following: int | None = None,
+) -> dict:
+    stats = gather_stats(
+        session_followed,
+        session_unfollowed,
+        profile_followers=profile_followers,
+        profile_following=profile_following,
+    )
     html = render_html(stats, name=name)
-    return send_email(html)
+    result = send_email(html)
+    if result.get("ok"):
+        _save_last_stats(profile_followers, profile_following)
+    return result

@@ -21,6 +21,10 @@ SAMPLE = {
     "total_unfollowed": 4,
     "cron_runs": 12,
     "account": "bloodxo",
+    "profile_followers": "1,872",
+    "profile_following": "928",
+    "delta_followers": "+14",
+    "delta_following": "-3",
 }
 
 
