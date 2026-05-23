@@ -20,7 +20,7 @@ MAX_UNFOLLOWS_PER_RUN = 10
 # Layer 1: pull MY_USERNAME's most-recent N followers into a pool. This is one
 # follower-page scrape, then we sub-sample it. Bigger pool = more diversity,
 # but ~50 is already a single SoundCloud page and stays cheap.
-RECENT_FOLLOWERS_POOL = 30
+RECENT_FOLLOWERS_POOL = 50
 # How many of those pool entries to randomly pick as seeds for layer 2.
 # Each pick costs one follower-page load, so this is the main rate-limit knob.
 RANDOM_SEED_COUNT = 2
