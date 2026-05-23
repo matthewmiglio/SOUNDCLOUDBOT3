@@ -36,8 +36,9 @@ from soundcloud import (
     username_from_url,
     get_follow_state,
     get_profile_stats,
+    CaptchaDetected,
 )
-from emailer import send_report
+from supabase_client import upload_actions, upload_run
 
 SC_BASE = "https://soundcloud.com"
 LOGS_DIR = os.path.join(os.path.dirname(ACTIONS_LOG), "..", "logs")
@@ -245,19 +246,42 @@ async def run_reconcile(headful: bool = False) -> int:
 async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
     logger = _SessionLogger("churn")
     log = logger.log
-    stats = {"followed": 0, "unfollowed": 0, "profile_followers": None, "profile_following": None}
+    started_at = _now()
+    exit_code = 1
+    stats = {"followed": 0, "unfollowed": 0, "profile_followers": None, "profile_following": None,
+             "followed_urls": [], "unfollowed_urls": []}
     try:
         exit_code = await _run_churn_impl(log, stats, dry_run=dry_run, headful=headful)
     finally:
         log(f"[churn] session log written to {logger.path}")
         if not dry_run:
-            result = send_report(
-                stats["followed"],
-                stats["unfollowed"],
-                profile_followers=stats["profile_followers"],
-                profile_following=stats["profile_following"],
-            )
-            log(f"[churn] email send: {result.get('ok')} ({result.get('status') or result.get('error')})")
+            new_rows = [
+                {
+                    "account":     config.MY_USERNAME,
+                    "ts":          a["timestamp"],
+                    "action":      a.get("action"),
+                    "status":      a.get("status"),
+                    "ok":          bool(a.get("ok")),
+                    "profile_url": a.get("profile_url"),
+                    "username":    a.get("username"),
+                    "reason":      a.get("reason") or "",
+                }
+                for a in load_actions()
+                if a.get("_ts") is not None and a["_ts"] >= started_at - timedelta(minutes=1)
+            ]
+            r1 = upload_actions(new_rows)
+            log(f"[churn] supabase actions upload: ok={r1.get('ok')} status={r1.get('status') or r1.get('error')} rows={len(new_rows)}")
+            r2 = upload_run({
+                "account":            config.MY_USERNAME,
+                "started_at":         started_at.isoformat(),
+                "finished_at":        _now().isoformat(),
+                "session_followed":   stats["followed"],
+                "session_unfollowed": stats["unfollowed"],
+                "profile_followers":  stats["profile_followers"],
+                "profile_following":  stats["profile_following"],
+                "exit_code":          exit_code,
+            })
+            log(f"[churn] supabase run upload:     ok={r2.get('ok')} status={r2.get('status') or r2.get('error')}")
         logger.close()
     return exit_code
 
@@ -319,27 +343,53 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
             log(f"          ->{result}")
             if result.get("status") == "unfollowed":
                 stats["unfollowed"] += 1
+                stats["unfollowed_urls"].append(s["profile_url"])
             await _sleep_between(config.SECONDS_BETWEEN_UNFOLLOWS)
 
         already = already_acted_usernames(load_actions())
         already.add(config.MY_USERNAME.lower())
 
-        log(f"[churn] mining followers of {config.MY_USERNAME} (top {config.SEED_FOLLOWERS_TOP_X})")
-        seeds = await list_followers(page, config.MY_USERNAME, max_users=config.SEED_FOLLOWERS_TOP_X)
-        log(f"[churn] got {len(seeds)} seed accounts")
+        log(f"[churn] pulling recent {config.RECENT_FOLLOWERS_POOL} followers of {config.MY_USERNAME} as seed pool")
+        try:
+            pool = await list_followers(page, config.MY_USERNAME, max_users=config.RECENT_FOLLOWERS_POOL)
+        except CaptchaDetected as e:
+            log(f"[churn] BAIL: {e}. Aborting before any further requests.")
+            return 3
+        log(f"[churn] pool size: {len(pool)}")
+
+        # Randomly pick RANDOM_SEED_COUNT seeds from the pool. Cap at pool size
+        # in case SoundCloud handed us fewer than expected (rate-limit / private).
+        if pool:
+            picks = random.sample(pool, k=min(config.RANDOM_SEED_COUNT, len(pool)))
+        else:
+            picks = []
+        log(f"[churn] randomly picked {len(picks)} seeds: {[p['username'] for p in picks]}")
 
         candidates: list[dict] = []
         seen = set()
-        for seed in seeds:
+        for i, seed in enumerate(picks):
+            # Long human-style pause BEFORE each seed mining (except the first).
+            if i > 0:
+                lo, hi = config.SECONDS_BETWEEN_SEEDS
+                pause = random.uniform(lo, hi)
+                log(f"[churn] sleeping {pause:.1f}s before next seed")
+                await asyncio.sleep(pause)
+
             log(f"[churn] mining followers of {seed['username']} (top {config.PER_SEED_FOLLOWERS_TOP_Y})")
-            sub = await list_followers(page, seed["username"], max_users=config.PER_SEED_FOLLOWERS_TOP_Y)
+            try:
+                sub = await list_followers(page, seed["username"], max_users=config.PER_SEED_FOLLOWERS_TOP_Y)
+            except CaptchaDetected as e:
+                log(f"[churn] BAIL: {e}. Will follow with what we already collected ({len(candidates)} candidates) and stop discovery.")
+                break
             for r in sub:
                 u = r["username"].lower()
                 if u in seen or u in already:
                     continue
                 seen.add(u)
                 candidates.append(r)
-            await human_delay(1.0, 2.5)
+
+        # Shuffle so we don't always follow the first seed's followers first.
+        random.shuffle(candidates)
 
         log(f"[churn] {len(candidates)} fresh candidates after dedup/filter")
 
@@ -368,6 +418,7 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
                 break
             if result.get("status") == "followed":
                 stats["followed"] += 1
+                stats["followed_urls"].append(c["profile_url"])
             await _sleep_between(config.SECONDS_BETWEEN_FOLLOWS)
 
         log(f"[churn] done. unfollowed={stats['unfollowed']}, followed={stats['followed']}")

@@ -47,6 +47,22 @@ def username_from_url(url_or_handle: str) -> str:
     return s.strip("/").split("/")[0]
 
 
+async def is_datadome_captcha(page) -> bool:
+    """Quick check for SoundCloud's DataDome bot-verification interstitial.
+
+    Returns True if the current page is the captcha challenge. Look for the
+    DataDome captcha container attribute or the visible 'Verification Required'
+    heading. Cheap (no waits) so callers can probe after every navigation.
+    """
+    try:
+        n = await page.locator(
+            '[data-dd-captcha-container], #captcha-container, [data-dd-captcha-human-title]'
+        ).count()
+        return n > 0
+    except Exception:
+        return False
+
+
 async def _wait_for_followers_list(page, timeout_ms: int = 15000) -> bool:
     try:
         await page.wait_for_selector(
@@ -100,8 +116,10 @@ async def _scroll_and_collect(page, max_users: int | None = None) -> list[dict]:
             last_count = len(seen)
         if stagnant_rounds >= 4:
             break
-        await page.mouse.wheel(0, 2500)
-        await human_delay(0.8, 1.6)
+        # Slower scroll cadence: SoundCloud's DataDome detector treats fast
+        # scroll-spam on the follower list as bot signal.
+        await page.mouse.wheel(0, 1500)
+        await human_delay(2.0, 4.0)
 
     items = list(seen.values())
     if max_users is not None:
@@ -109,11 +127,25 @@ async def _scroll_and_collect(page, max_users: int | None = None) -> list[dict]:
     return items
 
 
+class CaptchaDetected(Exception):
+    """Raised when SoundCloud's DataDome bot-verification page interrupts a scrape.
+
+    The caller should stop the whole run -- continuing to hit pages just digs
+    the rate-limit hole deeper.
+    """
+
+
 async def list_followers(page, username: str, max_users: int | None = None) -> list[dict]:
-    """Visit /{username}/followers and scrape rows. Returns [{username, profile_url, is_private}]."""
+    """Visit /{username}/followers and scrape rows. Returns [{username, profile_url, is_private}].
+
+    Raises CaptchaDetected if SoundCloud serves the DataDome challenge.
+    """
     url = f"{SC_BASE}/{username}/followers"
     await page.goto(url, wait_until="domcontentloaded")
     await human_delay(2.0, 3.5)
+    if await is_datadome_captcha(page):
+        await dump_page(page, f"followers-{username}-captcha", force=True)
+        raise CaptchaDetected(f"DataDome challenge on /{username}/followers")
     if not await _wait_for_followers_list(page):
         await dump_page(page, f"followers-{username}-noload", force=True)
         return []
