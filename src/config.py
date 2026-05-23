@@ -28,7 +28,7 @@ RANDOM_SEED_COUNT = 2
 # candidates.
 PER_SEED_FOLLOWERS_TOP_Y = 18
 # How many candidates to actually follow this run (subject to rate limits).
-FOLLOWS_PER_RUN_Z = 2
+FOLLOWS_PER_RUN_Z = 1
 
 # --- Pacing ---
 # Extra seconds to sleep between follow clicks, on top of the human_delay
