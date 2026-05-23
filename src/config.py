@@ -28,12 +28,12 @@ RANDOM_SEED_COUNT = 3
 # candidates.
 PER_SEED_FOLLOWERS_TOP_Y = 18
 # How many candidates to actually follow this run (subject to rate limits).
-FOLLOWS_PER_RUN_Z = 5
+FOLLOWS_PER_RUN_Z = 3
 
 # --- Pacing ---
 # Extra seconds to sleep between follow clicks, on top of the human_delay
 # inside follow_user(). Helps avoid burst-detection.
-SECONDS_BETWEEN_FOLLOWS = (60, 150)
+SECONDS_BETWEEN_FOLLOWS = (120, 240)
 SECONDS_BETWEEN_UNFOLLOWS = (30, 60)
 # Long pause between mining each random seed's followers. SoundCloud's
 # DataDome detector trips on rapid follower-list page loads, so we make these

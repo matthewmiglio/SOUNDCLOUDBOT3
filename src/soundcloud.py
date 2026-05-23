@@ -272,7 +272,7 @@ async def follow_user(page, profile_url: str, skip_private: bool = True) -> dict
 
 async def _follow_user_impl(page, profile_url: str) -> dict:
     await page.goto(profile_url, wait_until="domcontentloaded")
-    await human_delay(4.0, 7.0)
+    await human_delay(10.0, 20.0)
 
     btn = await _find_profile_follow_button(page)
     if not btn:
@@ -310,7 +310,7 @@ async def unfollow_user(page, profile_url: str) -> dict:
 
 async def _unfollow_user_impl(page, profile_url: str) -> dict:
     await page.goto(profile_url, wait_until="domcontentloaded")
-    await human_delay(4.0, 7.0)
+    await human_delay(10.0, 20.0)
 
     btn = await _find_profile_follow_button(page)
     if not btn:
