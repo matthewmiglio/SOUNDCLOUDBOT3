@@ -26,7 +26,7 @@ RECENT_FOLLOWERS_POOL = 40
 RANDOM_SEED_COUNT = 3
 # Layer 2: for each randomly-picked seed, pull this many of their followers as
 # candidates.
-PER_SEED_FOLLOWERS_TOP_Y = 10
+PER_SEED_FOLLOWERS_TOP_Y = 18
 # How many candidates to actually follow this run (subject to rate limits).
 FOLLOWS_PER_RUN_Z = 5
 
