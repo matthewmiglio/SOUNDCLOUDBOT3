@@ -38,7 +38,22 @@ from soundcloud import (
     get_profile_stats,
     CaptchaDetected,
 )
+from get.followers import get_followers as api_get_followers
+from get._client import fetch_profile_meta as api_fetch_profile_meta
 from supabase_client import upload_actions, upload_run
+
+
+def _api_rows(api_collection: list[dict]) -> list[dict]:
+    """Convert api-v2 user dicts into the {username, profile_url} shape the
+    follow/unfollow paths downstream expect."""
+    return [
+        {
+            "username": u["permalink"],
+            "display_name": u.get("username"),
+            "profile_url": f"{SC_BASE}/{u['permalink']}",
+        }
+        for u in api_collection
+    ]
 
 SC_BASE = "https://soundcloud.com"
 LOGS_DIR = os.path.join(os.path.dirname(ACTIONS_LOG), "..", "logs")
@@ -327,12 +342,13 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
             return 2
 
         try:
-            pstats = await get_profile_stats(page, config.MY_USERNAME)
-            stats["profile_followers"] = pstats.get("followers")
-            stats["profile_following"] = pstats.get("following")
-            log(f"[churn] profile stats: followers={stats['profile_followers']} following={stats['profile_following']}")
+            meta = api_fetch_profile_meta(config.MY_USERNAME)
+            u = meta["user"]
+            stats["profile_followers"] = u.get("followers_count")
+            stats["profile_following"] = u.get("followings_count")
+            log(f"[churn] profile stats (api-v2): followers={stats['profile_followers']} following={stats['profile_following']}")
         except Exception as e:
-            log(f"[churn] profile stats scrape failed: {e}")
+            log(f"[churn] profile stats fetch failed: {e}")
 
         for s in stale[:unfollow_budget]:
             age = (now - s["followed_at"]).days
@@ -349,11 +365,12 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
         already = already_acted_usernames(load_actions())
         already.add(config.MY_USERNAME.lower())
 
-        log(f"[churn] pulling recent {config.RECENT_FOLLOWERS_POOL} followers of {config.MY_USERNAME} as seed pool")
+        log(f"[churn] pulling recent {config.RECENT_FOLLOWERS_POOL} followers of {config.MY_USERNAME} as seed pool (api-v2)")
         try:
-            pool = await list_followers(page, config.MY_USERNAME, max_users=config.RECENT_FOLLOWERS_POOL)
-        except CaptchaDetected as e:
-            log(f"[churn] BAIL: {e}. Aborting before any further requests.")
+            api_pool = api_get_followers(config.MY_USERNAME, max_users=config.RECENT_FOLLOWERS_POOL)
+            pool = _api_rows(api_pool["collection"])
+        except Exception as e:
+            log(f"[churn] BAIL: pool fetch failed: {e}.")
             return 3
         log(f"[churn] pool size: {len(pool)}")
 
@@ -375,12 +392,18 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
                 log(f"[churn] sleeping {pause:.1f}s before next seed")
                 await asyncio.sleep(pause)
 
-            log(f"[churn] mining followers of {seed['username']} (top {config.PER_SEED_FOLLOWERS_TOP_Y})")
+            log(f"[churn] mining up to {config.PER_SEED_SCRAPE_MAX} followers of {seed['username']} via api-v2, will sample {config.PER_SEED_FOLLOWERS_TOP_Y}")
             try:
-                sub = await list_followers(page, seed["username"], max_users=config.PER_SEED_FOLLOWERS_TOP_Y)
-            except CaptchaDetected as e:
-                log(f"[churn] BAIL: {e}. Will follow with what we already collected ({len(candidates)} candidates) and stop discovery.")
-                break
+                api_sub = api_get_followers(seed["username"], max_users=config.PER_SEED_SCRAPE_MAX)
+                sub_all = _api_rows(api_sub["collection"])
+            except Exception as e:
+                log(f"[churn] api fetch for seed {seed['username']} failed: {e}. Skipping seed.")
+                continue
+            if not sub_all:
+                log(f"[churn]   seed {seed['username']} has no followers; skipping")
+                continue
+            sub = random.sample(sub_all, k=min(config.PER_SEED_FOLLOWERS_TOP_Y, len(sub_all)))
+            log(f"[churn]   scraped {len(sub_all)}, sampled {len(sub)}")
             for r in sub:
                 u = r["username"].lower()
                 if u in seen or u in already:
