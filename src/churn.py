@@ -355,7 +355,11 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
             if dry_run:
                 continue
             log(f"[churn] unfollow {s['profile_url']} (followed {age}d ago)")
-            result = await unfollow_user(page, s["profile_url"])
+            try:
+                result = await unfollow_user(page, s["profile_url"])
+            except CaptchaDetected as e:
+                log(f"[churn] BAIL: {e}. Aborting run on captcha.")
+                return 3
             log(f"          ->{result}")
             if result.get("status") == "unfollowed":
                 stats["unfollowed"] += 1
@@ -434,7 +438,11 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
                 break
 
             log(f"[churn] follow {c['profile_url']}")
-            result = await follow_user(page, c["profile_url"])
+            try:
+                result = await follow_user(page, c["profile_url"])
+            except CaptchaDetected as e:
+                log(f"[churn] BAIL: {e}. Aborting run on captcha.")
+                return 3
             log(f"          ->{result}")
             if result.get("status") == "rate_limited":
                 log("[churn] rate-limited. Stopping follow loop for this session.")
