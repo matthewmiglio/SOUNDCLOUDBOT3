@@ -19,6 +19,7 @@ import json
 import os
 import random
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import config
@@ -40,7 +41,7 @@ from soundcloud import (
 )
 from get.followers import get_followers as api_get_followers
 from get._client import fetch_profile_meta as api_fetch_profile_meta
-from supabase_client import upload_actions, upload_run
+from supabase_client import upload_actions, upload_run, upload_error
 
 
 def _api_rows(api_collection: list[dict]) -> list[dict]:
@@ -267,9 +268,47 @@ async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
              "followed_urls": [], "unfollowed_urls": []}
     try:
         exit_code = await _run_churn_impl(log, stats, dry_run=dry_run, headful=headful)
+    except Exception as e:
+        # Crash inside the churn run -- record it so the dashboard can show
+        # *why* the bot failed (not just that exit_code != 0). Best-effort:
+        # if the error upload itself fails, we still want to fall through to
+        # the regular run upload below.
+        tb = traceback.format_exc()
+        log(f"[churn] CRASH: {type(e).__name__}: {e}")
+        log(tb)
+        if not dry_run:
+            try:
+                upload_error({
+                    "account":        config.MY_USERNAME,
+                    "source":         "churn",
+                    "kind":           "crash",
+                    "exit_code":      1,
+                    "message":        f"{type(e).__name__}: {e}",
+                    "traceback":      tb,
+                    "run_started_at": started_at.isoformat(),
+                })
+            except Exception:
+                pass
     finally:
         log(f"[churn] session log written to {logger.path}")
         if not dry_run:
+            # Surface terminal-but-handled failure modes as their own kind so
+            # the dashboard can tell "expected" trouble (reauth, captcha) from
+            # an unexpected crash.
+            if exit_code in (2, 3):
+                try:
+                    upload_error({
+                        "account":        config.MY_USERNAME,
+                        "source":         "churn",
+                        "kind":           "session_expired" if exit_code == 2 else "captcha",
+                        "exit_code":      exit_code,
+                        "message":        ("session expired -- needs reauth"
+                                           if exit_code == 2 else
+                                           "captcha detected, aborted run"),
+                        "run_started_at": started_at.isoformat(),
+                    })
+                except Exception:
+                    pass
             new_rows = [
                 {
                     "account":     config.MY_USERNAME,
