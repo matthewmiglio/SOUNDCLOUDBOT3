@@ -1,8 +1,10 @@
-"""Churn flow configuration. Edit these values to tune the bot."""
+"""Churn flow configuration. Edit these values to tune the bot.
 
-# Your SoundCloud handle/slug (the path segment after soundcloud.com/).
-# Used as the seed account whose followers we mine.
-MY_USERNAME = "bloodxo"
+NOTE: the bot's own SoundCloud handle is *not* here -- it lives in
+data/profile.json (per-clone, gitignored) and is read via src/identity.py.
+Keeping tunables separate from identity means this file is byte-identical
+between clones and won't drift on `git pull`.
+"""
 
 # --- Rate limits ---
 # Hard caps on follow actions. If either is exceeded based on actions.log,
@@ -17,7 +19,7 @@ MAX_FOLLOW_AGE_DAYS = 10
 MAX_UNFOLLOWS_PER_RUN = 10
 
 # --- Discovery (random-sample 2-layer follower mining) ---
-# Layer 1: pull MY_USERNAME's most-recent N followers into a pool. This is one
+# Layer 1: pull the bot's most-recent N followers into a pool. This is one
 # follower-page scrape, then we sub-sample it. Bigger pool = more diversity,
 # but ~50 is already a single SoundCloud page and stays cheap.
 RECENT_FOLLOWERS_POOL = 300

@@ -75,6 +75,40 @@ async def cmd_unfollow(args):
     return await _with_browser(args.headful is False, run)
 
 
+async def _scrape_self_username(page) -> str | None:
+    """Read the logged-in handle by visiting /you (which redirects to /<slug>)."""
+    try:
+        await page.goto(f"{SC_BASE}/you", wait_until="domcontentloaded", timeout=15000)
+        url = page.url
+        if url.startswith(f"{SC_BASE}/"):
+            slug = url[len(SC_BASE) + 1:].split("/")[0].split("?")[0].strip()
+            if slug and slug != "you":
+                return slug
+    except Exception:
+        pass
+    return None
+
+
+async def cmd_whoami(args):
+    from identity import set_username, PROFILE_FILE
+    if args.username:
+        set_username(args.username)
+        print(f"wrote {PROFILE_FILE}: {args.username}")
+        return 0
+
+    async def run(page):
+        u = await _scrape_self_username(page)
+        if not u:
+            print("ERROR: could not scrape the logged-in handle. "
+                  "Rerun with --username <handle>.", file=sys.stderr)
+            return 1
+        set_username(u)
+        print(f"wrote {PROFILE_FILE}: {u}")
+        return 0
+
+    return await _with_browser(args.headful is False, run)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="soundcloudbot3")
     p.add_argument("--debug", action="store_true", help="dump HTML + screenshots to data/debug/")
@@ -104,6 +138,10 @@ def build_parser():
     sp = sub.add_parser("reconcile",
                         help="re-check every status=error follow entry and rewrite the log to match actual state")
 
+    sp = sub.add_parser("whoami",
+                        help="capture the logged-in handle into data/profile.json (scrapes the authed browser)")
+    sp.add_argument("--username", help="override -- write directly without a browser scrape")
+
     return p
 
 
@@ -115,7 +153,12 @@ def main(argv=None):
 
     if args.command == "login":
         asyncio.run(login_session())
+        print("Logged in. Next step: python src/main.py whoami "
+              "(captures your handle into data/profile.json).")
         return 0
+
+    if args.command == "whoami":
+        return asyncio.run(cmd_whoami(args)) or 0
 
     if args.command == "churn":
         return asyncio.run(run_churn(dry_run=bool(args.dry_run), headful=bool(args.headful))) or 0
@@ -144,9 +187,9 @@ if __name__ == "__main__":
         import traceback as _tb
         try:
             from supabase_client import upload_error
-            from config import MY_USERNAME
+            from identity import get_username
             upload_error({
-                "account":   MY_USERNAME,
+                "account":   get_username(),
                 "source":    "main",
                 "kind":      "startup",
                 "exit_code": 1,

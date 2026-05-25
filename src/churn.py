@@ -42,6 +42,7 @@ from soundcloud import (
 from get.followers import get_followers as api_get_followers
 from get._client import fetch_profile_meta as api_fetch_profile_meta
 from supabase_client import upload_actions, upload_run, upload_error
+from identity import get_username
 
 
 def _api_rows(api_collection: list[dict]) -> list[dict]:
@@ -279,7 +280,7 @@ async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
         if not dry_run:
             try:
                 upload_error({
-                    "account":        config.MY_USERNAME,
+                    "account":        get_username(),
                     "source":         "churn",
                     "kind":           "crash",
                     "exit_code":      1,
@@ -298,7 +299,7 @@ async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
             if exit_code in (2, 3):
                 try:
                     upload_error({
-                        "account":        config.MY_USERNAME,
+                        "account":        get_username(),
                         "source":         "churn",
                         "kind":           "session_expired" if exit_code == 2 else "captcha",
                         "exit_code":      exit_code,
@@ -311,7 +312,7 @@ async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
                     pass
             new_rows = [
                 {
-                    "account":     config.MY_USERNAME,
+                    "account":     get_username(),
                     "ts":          a["timestamp"],
                     "action":      a.get("action"),
                     "status":      a.get("status"),
@@ -326,7 +327,7 @@ async def run_churn(dry_run: bool = False, headful: bool = False) -> int:
             r1 = upload_actions(new_rows)
             log(f"[churn] supabase actions upload: ok={r1.get('ok')} status={r1.get('status') or r1.get('error')} rows={len(new_rows)}")
             r2 = upload_run({
-                "account":            config.MY_USERNAME,
+                "account":            get_username(),
                 "started_at":         started_at.isoformat(),
                 "finished_at":        _now().isoformat(),
                 "session_followed":   stats["followed"],
@@ -381,7 +382,7 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
             return 2
 
         try:
-            meta = api_fetch_profile_meta(config.MY_USERNAME)
+            meta = api_fetch_profile_meta(get_username())
             u = meta["user"]
             stats["profile_followers"] = u.get("followers_count")
             stats["profile_following"] = u.get("followings_count")
@@ -406,11 +407,11 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
             await _sleep_between(config.SECONDS_BETWEEN_UNFOLLOWS)
 
         already = already_acted_usernames(load_actions())
-        already.add(config.MY_USERNAME.lower())
+        already.add(get_username().lower())
 
-        log(f"[churn] pulling recent {config.RECENT_FOLLOWERS_POOL} followers of {config.MY_USERNAME} as seed pool (api-v2)")
+        log(f"[churn] pulling recent {config.RECENT_FOLLOWERS_POOL} followers of {get_username()} as seed pool (api-v2)")
         try:
-            api_pool = api_get_followers(config.MY_USERNAME, max_users=config.RECENT_FOLLOWERS_POOL)
+            api_pool = api_get_followers(get_username(), max_users=config.RECENT_FOLLOWERS_POOL)
             pool = _api_rows(api_pool["collection"])
         except Exception as e:
             log(f"[churn] BAIL: pool fetch failed: {e}.")
