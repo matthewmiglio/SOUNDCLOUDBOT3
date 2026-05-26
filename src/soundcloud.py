@@ -17,6 +17,7 @@ import time
 from urllib.parse import urlparse
 
 from browser import human_delay, dump_page, ACTIONS_LOG, DATA_DIR
+import human_browser
 
 
 SC_BASE = "https://soundcloud.com"
@@ -306,25 +307,26 @@ async def follow_user(
     page,
     profile_url: str,
     skip_private: bool = True,
-    warmup: tuple[float, float] = (30.0, 50.0),
+    simulate_human: bool = True,
 ) -> dict:
     """Navigate to a profile and click Follow. Returns {ok, status, reason}.
 
-    `warmup` is the (lo, hi) seconds range to sleep after page load and
-    before clicking. Tests can pass (0, 0) to skip; production keeps the
-    long warmup to mimic a human scrolling the profile before clicking.
+    When `simulate_human` is True (default), routes through
+    `human_browser.per_target_warmup` (scroll, play track, bezier mouse
+    movement) instead of a plain sleep. Tests can pass False for raw speed.
     """
-    result = await _follow_user_impl(page, profile_url, warmup=warmup)
+    result = await _follow_user_impl(page, profile_url, simulate_human=simulate_human)
     _log_action("follow", profile_url, result)
     return result
 
 
-async def _follow_user_impl(page, profile_url: str, warmup: tuple[float, float]) -> dict:
-    await page.goto(profile_url, wait_until="domcontentloaded")
-    await _captcha_check_with_grace(page, f"follow goto {profile_url}", "follow-captcha")
-    lo, hi = warmup
-    if hi > 0:
-        await human_delay(lo, hi)
+async def _follow_user_impl(page, profile_url: str, simulate_human: bool) -> dict:
+    if simulate_human:
+        await human_browser.per_target_warmup(page, profile_url)
+        await _captcha_check_with_grace(page, f"follow goto {profile_url}", "follow-captcha")
+    else:
+        await page.goto(profile_url, wait_until="domcontentloaded")
+        await _captcha_check_with_grace(page, f"follow goto {profile_url}", "follow-captcha")
 
     btn = await _find_profile_follow_button(page)
     if not btn:
@@ -338,9 +340,12 @@ async def _follow_user_impl(page, profile_url: str, warmup: tuple[float, float])
         return {"ok": False, "status": "error", "reason": f"unexpected button state: {state}"}
 
     try:
-        await btn.scroll_into_view_if_needed()
-        await human_delay(0.3, 0.9)
-        await btn.click()
+        if simulate_human:
+            await human_browser.human_hover_and_click(page, btn)
+        else:
+            await btn.scroll_into_view_if_needed()
+            await human_delay(0.3, 0.9)
+            await btn.click()
     except Exception as e:
         return {"ok": False, "status": "error", "reason": f"click failed: {e}"}
 
@@ -363,19 +368,20 @@ async def _follow_user_impl(page, profile_url: str, warmup: tuple[float, float])
 async def unfollow_user(
     page,
     profile_url: str,
-    warmup: tuple[float, float] = (10.0, 20.0),
+    simulate_human: bool = True,
 ) -> dict:
-    result = await _unfollow_user_impl(page, profile_url, warmup=warmup)
+    result = await _unfollow_user_impl(page, profile_url, simulate_human=simulate_human)
     _log_action("unfollow", profile_url, result)
     return result
 
 
-async def _unfollow_user_impl(page, profile_url: str, warmup: tuple[float, float]) -> dict:
-    await page.goto(profile_url, wait_until="domcontentloaded")
-    await _captcha_check_with_grace(page, f"unfollow goto {profile_url}", "unfollow-captcha")
-    lo, hi = warmup
-    if hi > 0:
-        await human_delay(lo, hi)
+async def _unfollow_user_impl(page, profile_url: str, simulate_human: bool) -> dict:
+    if simulate_human:
+        await human_browser.per_target_warmup(page, profile_url)
+        await _captcha_check_with_grace(page, f"unfollow goto {profile_url}", "unfollow-captcha")
+    else:
+        await page.goto(profile_url, wait_until="domcontentloaded")
+        await _captcha_check_with_grace(page, f"unfollow goto {profile_url}", "unfollow-captcha")
 
     btn = await _find_profile_follow_button(page)
     if not btn:
@@ -389,18 +395,24 @@ async def _unfollow_user_impl(page, profile_url: str, warmup: tuple[float, float
         return {"ok": False, "status": "error", "reason": f"unexpected button state: {state}"}
 
     try:
-        await btn.scroll_into_view_if_needed()
-        await human_delay(0.3, 0.9)
-        await btn.click()
+        if simulate_human:
+            await human_browser.human_hover_and_click(page, btn)
+        else:
+            await btn.scroll_into_view_if_needed()
+            await human_delay(0.3, 0.9)
+            await btn.click()
         await human_delay(0.6, 1.2)
     except Exception as e:
         return {"ok": False, "status": "error", "reason": f"click failed: {e}"}
 
-    await _captcha_check_with_grace(
-        page, f"unfollow post-click {profile_url}", "unfollow-post-click-captcha"
-    )
-    after = await _find_profile_follow_button(page, timeout_ms=0)
-    after_state = await _button_state(after) if after else "unknown"
-    if after_state == "follow":
-        return {"ok": True, "status": "unfollowed", "reason": ""}
+    after_state = "unknown"
+    for _ in range(10):
+        await asyncio.sleep(2.0)
+        await _captcha_check_with_grace(
+            page, f"unfollow post-click {profile_url}", "unfollow-post-click-captcha"
+        )
+        after = await _find_profile_follow_button(page, timeout_ms=0)
+        after_state = await _button_state(after) if after else "unknown"
+        if after_state == "follow":
+            return {"ok": True, "status": "unfollowed", "reason": ""}
     return {"ok": False, "status": "error", "reason": f"state after click: {after_state}"}

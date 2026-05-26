@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 import follow_queue
+import human_browser
 from browser import (
     launch_browser,
     check_login_status,
@@ -360,7 +361,18 @@ async def _run_churn_impl(log, stats: dict, dry_run: bool, headful: bool) -> int
         await _capture_profile_stats(log, stats)
 
         if mode == "scrape":
+            # Scrape hits unauthenticated api-v2 via urllib -- no need to
+            # warm the browser session, no captcha exposure.
             return await _do_scrape(log, page, stats)
+
+        # Once-per-session human warmup before any follow/unfollow.
+        # Looks like a real user browsing the feed and playing a track
+        # before taking an action.
+        try:
+            await human_browser.session_prelude(page, log)
+        except Exception as e:
+            log(f"[churn] session prelude failed (continuing anyway): {e}")
+
         if mode == "unfollow":
             return await _do_unfollow(log, page, stats, actions)
         if mode == "follow":

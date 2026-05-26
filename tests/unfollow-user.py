@@ -55,7 +55,7 @@ async def main_async(target: str, headful: bool) -> int:
         await asyncio.sleep(2.0)
         await _checkpoint(page, f"{run_id}-unfollow-03-profile-after-2s")
 
-        result = await unfollow_user(page, url, warmup=(0, 0))
+        result = await unfollow_user(page, url, simulate_human=True)
         await _checkpoint(page, f"{run_id}-unfollow-04-after-click")
         print(f"[test] result: {result}")
         return 0 if result.get("ok") else 1

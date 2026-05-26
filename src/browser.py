@@ -58,6 +58,9 @@ async def launch_browser(headless: bool = True):
             "--disable-features=IsolateOrigins,site-per-process",
             "--no-default-browser-check",
             "--no-first-run",
+            # play_a_track() actually plays audio so DataDome sees real media
+            # network traffic, but we don't want it audible on the host.
+            "--mute-audio",
         ],
         ignore_default_args=["--enable-automation"],
     )
@@ -71,6 +74,17 @@ async def launch_browser(headless: bool = True):
         context = await pw.chromium.launch_persistent_context(**launch_kwargs)
     await context.add_init_script(_STEALTH_JS)
     page = context.pages[0] if context.pages else await context.new_page()
+    # tf-playwright-stealth (imported as `playwright_stealth`) patches ~20
+    # fingerprint surfaces -- canvas, WebGL, audio, fonts, Client Hints, etc.
+    # -- that our hand-rolled _STEALTH_JS doesn't touch. Lazy import so a
+    # missing package raises with a clear message rather than at module load.
+    try:
+        from playwright_stealth import stealth_async
+    except ImportError as e:
+        raise RuntimeError(
+            "playwright-stealth (tf-playwright-stealth) not installed -- run `poetry install`"
+        ) from e
+    await stealth_async(page)
     return pw, context, page
 
 
