@@ -393,12 +393,8 @@ async def _scrape_once(log, already: set[str]) -> list[dict]:
     candidates: list[dict] = []
     seen = set()
     for i, seed in enumerate(picks):
-        if i > 0:
-            lo, hi = config.SECONDS_BETWEEN_SEEDS
-            pause = random.uniform(lo, hi)
-            log(f"[churn/scrape] sleeping {pause:.1f}s before next seed")
-            await asyncio.sleep(pause)
-
+        # No seed-pause: scraping hits the unauthenticated api-v2 with a
+        # rotated UA per request, no DataDome risk, no rate-limit cost.
         log(f"[churn/scrape] mining up to {config.PER_SEED_SCRAPE_MAX} followers of {seed['username']}")
         try:
             api_sub = api_get_followers(seed["username"], max_users=config.PER_SEED_SCRAPE_MAX)
