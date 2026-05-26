@@ -37,16 +37,23 @@ poetry run python src/main.py reconcile
 
 ## Churn flow
 
-Idempotent — re-reads `data/actions.log` on every run, so duplicate follows
-are skipped and rate limits self-enforce.
+Each cron invocation is a state machine that picks ONE mode based on disk
+state + rate-limit windows read from `data/actions.log`:
 
-1. Read `data/actions.log`; if `MAX_FOLLOWS_PER_HOUR` or
-   `MAX_FOLLOWS_PER_DAY` already met, exit early.
-2. **Unfollow phase** — anyone followed > `MAX_FOLLOW_AGE_DAYS` ago that
-   we haven't already unfollowed, up to `MAX_UNFOLLOWS_PER_RUN`.
-3. **Discovery phase** — scrape `SEED_FOLLOWERS_TOP_X` of your followers,
-   then `PER_SEED_FOLLOWERS_TOP_Y` of each seed's followers; dedupe; follow
-   up to `FOLLOWS_PER_RUN_Z` while respecting live rate caps.
+1. **Scrape** — if the on-disk follow queue (`data/follow_queue.csv`) has
+   fewer than `FOLLOW_QUEUE_MIN_THRESHOLD` pending rows, harvest
+   `SCRAPE_BATCH_SIZE` fresh candidates from `RANDOM_SEED_COUNT` seeds and
+   append them.
+2. **Unfollow** — else if there are follows older than
+   `MAX_FOLLOW_AGE_DAYS` that haven't been unfollowed, and the hourly/daily
+   unfollow caps aren't hit, unfollow up to `UNFOLLOWS_PER_RUN` of them.
+3. **Follow** — else, while follow caps aren't hit, randomly pop up to
+   `FOLLOWS_PER_RUN` rows from the queue and follow them.
+
+Idempotent: `actions.log` is the source of truth for "already acted" and
+for the rate-limit counters. The queue is append-only; a row is "pending"
+iff its username has no successful follow recorded. Follow caps and
+unfollow caps are kept 1:1 so net followings stay flat.
 
 All tunables live in `src/config.py`.
 
@@ -73,7 +80,8 @@ Email reporting (Resend) was removed — the dashboard replaces it.
 
 ## Cron
 
-Register `cron/run-churn.ps1` with Windows Task Scheduler — 3h trigger plus
-the wrapper's built-in 0-2h random jitter gives an effective 3-5h cadence.
-The shared `SoundCloudBot3-Churn` task is staggered to `:15` so it doesn't
-overlap with the Twitter tasks (`:00`, `:30`).
+Register `cron/run-churn.ps1` with Windows Task Scheduler — 2h trigger plus
+the wrapper's built-in 0-30min random jitter gives an effective 2h-2h30min
+cadence. The `SoundCloudBot3-Churn` task is staggered to `:15` so it doesn't
+overlap with the Twitter tasks (`:00`, `:30`). Run `cron/install-task.cmd`
+to register/refresh the task.
