@@ -48,15 +48,24 @@ def username_from_url(url_or_handle: str) -> str:
 
 
 async def is_datadome_captcha(page) -> bool:
-    """Quick check for SoundCloud's DataDome bot-verification interstitial.
+    """Quick check for SoundCloud's DataDome bot-verification challenge.
 
-    Returns True if the current page is the captcha challenge. Look for the
-    DataDome captcha container attribute or the visible 'Verification Required'
-    heading. Cheap (no waits) so callers can probe after every navigation.
+    SoundCloud now serves DataDome as an iframe overlaid on the page after
+    an offending API call (e.g. POST /me/followings/<id>). The challenge
+    iframe loads from geo.captcha-delivery.com -- that domain is the most
+    reliable marker. The older container selectors are kept as a fallback
+    in case DataDome reverts to inline DOM challenges.
     """
     try:
         n = await page.locator(
-            '[data-dd-captcha-container], #captcha-container, [data-dd-captcha-human-title]'
+            ', '.join([
+                'iframe[src*="captcha-delivery.com"]',
+                'iframe[title="Verification system"]',
+                'iframe[id^="ddChallengeBody"]',
+                '[data-dd-captcha-container]',
+                '#captcha-container',
+                '[data-dd-captcha-human-title]',
+            ])
         ).count()
         return n > 0
     except Exception:
@@ -135,6 +144,28 @@ class CaptchaDetected(Exception):
     """
 
 
+# When set > 0, if a captcha is detected we sleep this many seconds first,
+# then re-check; if it's gone we continue, else we raise. Headful runs use
+# this as a manual-solve window. Headless production sets it to 0.
+CAPTCHA_GRACE_SECONDS: float = 5.0
+
+
+async def _captcha_check_with_grace(page, where: str, dump_label: str) -> None:
+    """If a captcha is currently shown, give the user `CAPTCHA_GRACE_SECONDS`
+    to solve it manually. If still there afterward, dump page and raise.
+    No-op when no captcha is present."""
+    if not await is_datadome_captcha(page):
+        return
+    print(f"[captcha] detected at {where} -- waiting {CAPTCHA_GRACE_SECONDS}s for manual solve")
+    if CAPTCHA_GRACE_SECONDS > 0:
+        await asyncio.sleep(CAPTCHA_GRACE_SECONDS)
+        if not await is_datadome_captcha(page):
+            print(f"[captcha] cleared after grace window at {where}; continuing")
+            return
+    await dump_page(page, dump_label, force=True)
+    raise CaptchaDetected(f"DataDome challenge at {where}")
+
+
 async def list_followers(page, username: str, max_users: int | None = None) -> list[dict]:
     """Visit /{username}/followers and scrape rows. Returns [{username, profile_url, is_private}].
 
@@ -143,9 +174,7 @@ async def list_followers(page, username: str, max_users: int | None = None) -> l
     url = f"{SC_BASE}/{username}/followers"
     await page.goto(url, wait_until="domcontentloaded")
     await human_delay(2.0, 3.5)
-    if await is_datadome_captcha(page):
-        await dump_page(page, f"followers-{username}-captcha", force=True)
-        raise CaptchaDetected(f"DataDome challenge on /{username}/followers")
+    await _captcha_check_with_grace(page, f"/{username}/followers", f"followers-{username}-captcha")
     if not await _wait_for_followers_list(page):
         await dump_page(page, f"followers-{username}-noload", force=True)
         return []
@@ -212,13 +241,23 @@ async def list_following(page, username: str, max_users: int | None = None) -> l
     ]
 
 
-async def _find_profile_follow_button(page):
+async def _find_profile_follow_button(page, timeout_ms: int = 5000):
     """Return the profile header follow/unfollow button locator, or None.
 
     SoundCloud profile pages have one prominent sc-button-follow next to the
     user's name. Sidebar suggestions can also have sc-button-follow buttons,
     so we prefer the one inside the profile header region when possible.
+
+    Waits up to `timeout_ms` for *any* sc-button-follow to appear before
+    giving up -- the profile page renders async, and querying immediately
+    after `domcontentloaded` will miss the button. Pass timeout_ms=0 for
+    an immediate non-blocking check.
     """
+    if timeout_ms > 0:
+        try:
+            await page.wait_for_selector('.sc-button-follow', timeout=timeout_ms)
+        except Exception:
+            return None
     for sel in [
         '.profileHeaderInfo .sc-button-follow',
         '.profileHero .sc-button-follow',
@@ -263,19 +302,29 @@ async def get_follow_state(page, profile_url: str) -> str:
     return await _button_state(btn)
 
 
-async def follow_user(page, profile_url: str, skip_private: bool = True) -> dict:
-    """Navigate to a profile and click Follow. Returns {ok, status, reason}."""
-    result = await _follow_user_impl(page, profile_url)
+async def follow_user(
+    page,
+    profile_url: str,
+    skip_private: bool = True,
+    warmup: tuple[float, float] = (30.0, 50.0),
+) -> dict:
+    """Navigate to a profile and click Follow. Returns {ok, status, reason}.
+
+    `warmup` is the (lo, hi) seconds range to sleep after page load and
+    before clicking. Tests can pass (0, 0) to skip; production keeps the
+    long warmup to mimic a human scrolling the profile before clicking.
+    """
+    result = await _follow_user_impl(page, profile_url, warmup=warmup)
     _log_action("follow", profile_url, result)
     return result
 
 
-async def _follow_user_impl(page, profile_url: str) -> dict:
+async def _follow_user_impl(page, profile_url: str, warmup: tuple[float, float]) -> dict:
     await page.goto(profile_url, wait_until="domcontentloaded")
-    if await is_datadome_captcha(page):
-        await dump_page(page, "follow-captcha", force=True)
-        raise CaptchaDetected(f"DataDome challenge on {profile_url}")
-    await human_delay(30.0, 50.0)
+    await _captcha_check_with_grace(page, f"follow goto {profile_url}", "follow-captcha")
+    lo, hi = warmup
+    if hi > 0:
+        await human_delay(lo, hi)
 
     btn = await _find_profile_follow_button(page)
     if not btn:
@@ -298,25 +347,35 @@ async def _follow_user_impl(page, profile_url: str) -> dict:
     after_state = "unknown"
     for _ in range(10):
         await asyncio.sleep(2.0)
-        after = await _find_profile_follow_button(page)
+        # DataDome serves the captcha as a post-API-call iframe overlay --
+        # the follow POST silently triggers it. Check every poll so we bail
+        # the run instead of "successfully" returning state=follow forever.
+        await _captcha_check_with_grace(
+            page, f"follow post-click {profile_url}", "follow-post-click-captcha"
+        )
+        after = await _find_profile_follow_button(page, timeout_ms=0)
         after_state = await _button_state(after) if after else "unknown"
         if after_state == "unfollow":
             return {"ok": True, "status": "followed", "reason": ""}
     return {"ok": False, "status": "error", "reason": f"state after click: {after_state}"}
 
 
-async def unfollow_user(page, profile_url: str) -> dict:
-    result = await _unfollow_user_impl(page, profile_url)
+async def unfollow_user(
+    page,
+    profile_url: str,
+    warmup: tuple[float, float] = (10.0, 20.0),
+) -> dict:
+    result = await _unfollow_user_impl(page, profile_url, warmup=warmup)
     _log_action("unfollow", profile_url, result)
     return result
 
 
-async def _unfollow_user_impl(page, profile_url: str) -> dict:
+async def _unfollow_user_impl(page, profile_url: str, warmup: tuple[float, float]) -> dict:
     await page.goto(profile_url, wait_until="domcontentloaded")
-    if await is_datadome_captcha(page):
-        await dump_page(page, "unfollow-captcha", force=True)
-        raise CaptchaDetected(f"DataDome challenge on {profile_url}")
-    await human_delay(10.0, 20.0)
+    await _captcha_check_with_grace(page, f"unfollow goto {profile_url}", "unfollow-captcha")
+    lo, hi = warmup
+    if hi > 0:
+        await human_delay(lo, hi)
 
     btn = await _find_profile_follow_button(page)
     if not btn:
@@ -337,7 +396,10 @@ async def _unfollow_user_impl(page, profile_url: str) -> dict:
     except Exception as e:
         return {"ok": False, "status": "error", "reason": f"click failed: {e}"}
 
-    after = await _find_profile_follow_button(page)
+    await _captcha_check_with_grace(
+        page, f"unfollow post-click {profile_url}", "unfollow-post-click-captcha"
+    )
+    after = await _find_profile_follow_button(page, timeout_ms=0)
     after_state = await _button_state(after) if after else "unknown"
     if after_state == "follow":
         return {"ok": True, "status": "unfollowed", "reason": ""}

@@ -1,33 +1,66 @@
 """Smoke test: follow a single user by handle or URL.
 
+Dumps HTML + screenshot to data/debug/ at each navigation checkpoint so the
+failure mode can be inspected afterward without printing the page content
+into stdout. Skips the production warmup delay -- use churn for that.
+
 Usage:
-    poetry run python tests/follow-user.py <username-or-url>
+    poetry run python tests/follow-user.py <username-or-url>           # headless
+    poetry run python tests/follow-user.py <username-or-url> --headful
 """
 
 import argparse
 import asyncio
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 
-from browser import launch_browser, check_login_status  # noqa: E402
-from soundcloud import follow_user, username_from_url  # noqa: E402
+from browser import launch_browser, check_login_status, dump_page  # noqa: E402
+from soundcloud import (  # noqa: E402
+    follow_user,
+    username_from_url,
+    is_datadome_captcha,
+    _find_profile_follow_button,
+    _button_state,
+)
+
+
+async def _checkpoint(page, label: str) -> None:
+    """Save HTML + screenshot + a one-line console marker (no html in stdout)."""
+    base = await dump_page(page, label, force=True)
+    captcha = await is_datadome_captcha(page)
+    btn = await _find_profile_follow_button(page, timeout_ms=0)
+    btn_state = await _button_state(btn) if btn else "absent"
+    print(f"[checkpoint:{label}] url={page.url} captcha={captcha} button={btn_state} dump={base}")
 
 
 async def main_async(target: str, headful: bool) -> int:
     user = username_from_url(target)
     url = f"https://soundcloud.com/{user}"
-    print(f"[test] follow target: {url}")
+    print(f"[test] follow target: {url}  headful={headful}")
+    run_id = time.strftime("%Y%m%d-%H%M%S")
 
     pw, context, page = await launch_browser(headless=not headful)
     try:
         await page.goto("https://soundcloud.com/", wait_until="domcontentloaded")
+        await _checkpoint(page, f"{run_id}-follow-01-after-root")
         if not await check_login_status(page):
             print("[test] not logged in -- run: python src/main.py login", file=sys.stderr)
             return 2
-        result = await follow_user(page, url)
+
+        await page.goto(url, wait_until="domcontentloaded")
+        await _checkpoint(page, f"{run_id}-follow-02-profile-domcontentloaded")
+
+        # Wait a moment to let async UI hydrate, then re-checkpoint so we can
+        # diff the "button absent" vs "button present" states.
+        await asyncio.sleep(2.0)
+        await _checkpoint(page, f"{run_id}-follow-03-profile-after-2s")
+
+        result = await follow_user(page, url, warmup=(0, 0))
+        await _checkpoint(page, f"{run_id}-follow-04-after-click")
         print(f"[test] result: {result}")
         return 0 if result.get("ok") else 1
     finally:
